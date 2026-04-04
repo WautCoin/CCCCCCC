@@ -1,10 +1,9 @@
 """
 img_import.py — image import utilities for CCCCCCC.
 
-Provides functions to load, validate, and inspect image files.
-Supported formats: PNG, JPEG, GIF, BMP, WEBP (anything the standard
-`imghdr` module can identify, plus any format Pillow supports when
-available).
+Provides functions to load, validate, and inspect image files using
+magic-byte detection.  No third-party dependencies are required.
+Supported formats: PNG, JPEG, GIF, BMP, WEBP, TIFF.
 """
 
 import os
@@ -15,7 +14,7 @@ import struct
 # Public API
 # ---------------------------------------------------------------------------
 
-SUPPORTED_TYPES = {"png", "jpeg", "gif", "bmp", "webp", "tiff", "rgbe"}
+SUPPORTED_TYPES = {"png", "jpeg", "gif", "bmp", "webp", "tiff"}
 
 
 def import_image(path):
@@ -96,7 +95,10 @@ def _detect_type(path):
         return "jpeg"
     if header[:6] in (b"GIF87a", b"GIF89a"):
         return "gif"
-    if header[:2] in (b"BM", b"BA", b"CI", b"CP", b"IC", b"PT"):
+    if header[:2] == b"BM":
+        return "bmp"
+    # OS/2 bitmap variants share a common 2-byte signature prefix.
+    if header[:2] in (b"BA", b"CI", b"CP", b"IC", b"PT"):
         return "bmp"
     if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "webp"
@@ -110,7 +112,7 @@ def _read_dimensions(path, image_type):
     """Return (width, height) for common formats using only stdlib."""
     try:
         with open(path, "rb") as fh:
-            data = fh.read(24)
+            data = fh.read(26)
     except OSError:
         return (None, None)
 
@@ -128,8 +130,9 @@ def _read_dimensions(path, image_type):
             return (w, h)
 
     elif image_type == "bmp":
-        if len(data) >= 22:
-            w, h = struct.unpack("<ii", data[18:22])
+        # BITMAPINFOHEADER: width at offset 18 (4 bytes), height at 22 (4 bytes)
+        if len(data) >= 26:
+            w, h = struct.unpack("<ii", data[18:26])
             return (abs(w), abs(h))
 
     elif image_type == "webp":
@@ -150,7 +153,8 @@ def _jpeg_dimensions(path):
                 if marker[0] != 0xFF:
                     break
                 code = marker[1]
-                if code in range(0xC0, 0xC3 + 1) or code in range(0xC5, 0xC7 + 1):
+                # SOF0–SOF3, SOF5–SOF7 markers contain image dimensions.
+                if code in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7):
                     fh.read(3)  # length + precision
                     h, w = struct.unpack(">HH", fh.read(4))
                     return (w, h)
